@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { collection, addDoc, serverTimestamp, onSnapshot } from 'firebase/firestore'
 import { db } from './firebase'
 import { exportToExcel, exportToJSON, getStats } from './exportData'
@@ -23,6 +23,13 @@ function App() {
   const [showLoginForm, setShowLoginForm] = useState(false)
   const [password, setPassword] = useState('')
   const [loginError, setLoginError] = useState('')
+  
+  // Electronic signature states
+  const [signature, setSignature] = useState('')
+  const [isDrawing, setIsDrawing] = useState(false)
+  const [signatureError, setSignatureError] = useState('')
+  const canvasRef = useRef(null)
+  const contextRef = useRef(null)
 
   // Check Firebase connection
   useEffect(() => {
@@ -63,6 +70,58 @@ function App() {
     setIsAuthenticated(authStatus)
   }, [])
 
+  // Initialize signature canvas
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (canvas) {
+      canvas.width = canvas.offsetWidth * 2
+      canvas.height = canvas.offsetHeight * 2
+      canvas.style.width = `${canvas.offsetWidth}px`
+      canvas.style.height = `${canvas.offsetHeight}px`
+      
+      const context = canvas.getContext('2d')
+      context.scale(2, 2)
+      context.lineCap = 'round'
+      context.strokeStyle = '#000'
+      context.lineWidth = 2
+      contextRef.current = context
+    }
+  }, [])
+
+  const startDrawing = (e) => {
+    setIsDrawing(true)
+    const { offsetX, offsetY } = e.nativeEvent
+    contextRef.current.beginPath()
+    contextRef.current.moveTo(offsetX, offsetY)
+  }
+
+  const draw = (e) => {
+    if (!isDrawing) return
+    const { offsetX, offsetY } = e.nativeEvent
+    contextRef.current.lineTo(offsetX, offsetY)
+    contextRef.current.stroke()
+  }
+
+  const stopDrawing = () => {
+    setIsDrawing(false)
+    const canvas = canvasRef.current
+    if (canvas) {
+      const signatureData = canvas.toDataURL()
+      setSignature(signatureData)
+      setSignatureError('')
+    }
+  }
+
+  const clearSignature = () => {
+    const canvas = canvasRef.current
+    const context = contextRef.current
+    if (canvas && context) {
+      context.clearRect(0, 0, canvas.width, canvas.height)
+      setSignature('')
+      setSignatureError('')
+    }
+  }
+
   const validateForm = () => {
     const newErrors = {}
 
@@ -87,6 +146,12 @@ function App() {
       newErrors.address = 'כתובת היא שדה חובה'
     } else if (formData.address.trim().length < 5) {
       newErrors.address = 'כתובת חייב להכיל לפחות 5 תווים'
+    }
+
+    // Validate signature
+    if (!signature) {
+      newErrors.signature = 'חתימה אלקטרונית היא חובה'
+      setSignatureError('חתימה אלקטרונית היא חובה')
     }
 
     setErrors(newErrors)
@@ -128,6 +193,8 @@ function App() {
           name: formData.name.trim(),
           age: parseInt(formData.age),
           address: formData.address.trim(),
+          signature: signature, // Add signature data
+          signatureTimestamp: serverTimestamp(),
           submittedAt: serverTimestamp(),
           ipAddress: 'client-ip', // In production, get from server
           userAgent: navigator.userAgent
@@ -140,6 +207,8 @@ function App() {
         // Reset form after successful submission
         setTimeout(() => {
           setFormData({ name: '', age: '', address: '' })
+          setSignature('')
+          clearSignature()
           setIsSubmitted(false)
         }, 3000)
         
@@ -165,6 +234,9 @@ function App() {
   const handleReset = () => {
     setFormData({ name: '', age: '', address: '' })
     setErrors({})
+    setSignature('')
+    setSignatureError('')
+    clearSignature()
     setIsSubmitted(false)
   }
 
@@ -217,7 +289,7 @@ function App() {
     logout()
     setIsAuthenticated(false)
     setShowExportOptions(false)
-    alert('יצאת מהמערכת')
+    alert('יציאה')
   }
 
   const handlePasswordChange = (e) => {
@@ -415,6 +487,61 @@ function App() {
                 disabled={isSubmitting}
               />
               {errors.address && <span className="error-message">{errors.address}</span>}
+            </div>
+
+            {/* Electronic Signature */}
+            <div className="form-group">
+              <label className="form-label">
+                חתימה אלקטרונית *
+              </label>
+              <div className="signature-container">
+                <canvas
+                  ref={canvasRef}
+                  className={`signature-canvas ${signatureError ? 'error' : ''}`}
+                  onMouseDown={startDrawing}
+                  onMouseMove={draw}
+                  onMouseUp={stopDrawing}
+                  onMouseLeave={stopDrawing}
+                  onTouchStart={(e) => {
+                    e.preventDefault()
+                    const touch = e.touches[0]
+                    const rect = e.target.getBoundingClientRect()
+                    const offsetX = touch.clientX - rect.left
+                    const offsetY = touch.clientY - rect.top
+                    setIsDrawing(true)
+                    contextRef.current.beginPath()
+                    contextRef.current.moveTo(offsetX, offsetY)
+                  }}
+                  onTouchMove={(e) => {
+                    e.preventDefault()
+                    if (!isDrawing) return
+                    const touch = e.touches[0]
+                    const rect = e.target.getBoundingClientRect()
+                    const offsetX = touch.clientX - rect.left
+                    const offsetY = touch.clientY - rect.top
+                    contextRef.current.lineTo(offsetX, offsetY)
+                    contextRef.current.stroke()
+                  }}
+                  onTouchEnd={(e) => {
+                    e.preventDefault()
+                    stopDrawing()
+                  }}
+                />
+                {signatureError && <span className="error-message">{signatureError}</span>}
+                <div className="signature-actions">
+                  <button
+                    type="button"
+                    className="clear-signature-btn"
+                    onClick={clearSignature}
+                    disabled={isSubmitting}
+                  >
+                    נקה חתימה
+                  </button>
+                </div>
+                <p className="signature-instructions">
+                  חתום על הקו המקווקו למעלה כדי לאשר את הטופס
+                </p>
+              </div>
             </div>
 
             <div className="form-actions">
