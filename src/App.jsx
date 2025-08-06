@@ -28,6 +28,8 @@ function App() {
   const [signature, setSignature] = useState('')
   const [isDrawing, setIsDrawing] = useState(false)
   const [signatureError, setSignatureError] = useState('')
+  const [signatureText, setSignatureText] = useState('')
+  const [showTextSignature, setShowTextSignature] = useState(false)
   const canvasRef = useRef(null)
   const contextRef = useRef(null)
 
@@ -74,10 +76,12 @@ function App() {
   useEffect(() => {
     const canvas = canvasRef.current
     if (canvas) {
-      canvas.width = canvas.offsetWidth * 2
-      canvas.height = canvas.offsetHeight * 2
-      canvas.style.width = `${canvas.offsetWidth}px`
-      canvas.style.height = `${canvas.offsetHeight}px`
+      // Set canvas size with proper scaling
+      const rect = canvas.getBoundingClientRect()
+      canvas.width = rect.width * 2
+      canvas.height = rect.height * 2
+      canvas.style.width = `${rect.width}px`
+      canvas.style.height = `${rect.height}px`
       
       const context = canvas.getContext('2d')
       context.scale(2, 2)
@@ -88,21 +92,44 @@ function App() {
     }
   }, [])
 
+  const getCoordinates = (e) => {
+    const canvas = canvasRef.current
+    const rect = canvas.getBoundingClientRect()
+    
+    if (e.touches && e.touches[0]) {
+      // Touch event
+      const touch = e.touches[0]
+      return {
+        x: touch.clientX - rect.left,
+        y: touch.clientY - rect.top
+      }
+    } else {
+      // Mouse event
+      return {
+        x: e.clientX - rect.left,
+        y: e.clientY - rect.top
+      }
+    }
+  }
+
   const startDrawing = (e) => {
+    e.preventDefault()
     setIsDrawing(true)
-    const { offsetX, offsetY } = e.nativeEvent
+    const coords = getCoordinates(e)
     contextRef.current.beginPath()
-    contextRef.current.moveTo(offsetX, offsetY)
+    contextRef.current.moveTo(coords.x, coords.y)
   }
 
   const draw = (e) => {
+    e.preventDefault()
     if (!isDrawing) return
-    const { offsetX, offsetY } = e.nativeEvent
-    contextRef.current.lineTo(offsetX, offsetY)
+    const coords = getCoordinates(e)
+    contextRef.current.lineTo(coords.x, coords.y)
     contextRef.current.stroke()
   }
 
   const stopDrawing = () => {
+    if (!isDrawing) return
     setIsDrawing(false)
     const canvas = canvasRef.current
     if (canvas) {
@@ -118,8 +145,23 @@ function App() {
     if (canvas && context) {
       context.clearRect(0, 0, canvas.width, canvas.height)
       setSignature('')
+      setSignatureText('')
       setSignatureError('')
     }
+  }
+
+  const handleTextSignature = () => {
+    if (signatureText.trim()) {
+      setSignature('TEXT_SIGNATURE:' + signatureText.trim())
+      setSignatureError('')
+    } else {
+      setSignatureError('אנא הכנס את שמך לחתימה')
+    }
+  }
+
+  const toggleSignatureMode = () => {
+    setShowTextSignature(!showTextSignature)
+    clearSignature()
   }
 
   const validateForm = () => {
@@ -495,39 +537,61 @@ function App() {
                 חתימה אלקטרונית *
               </label>
               <div className="signature-container">
-                <canvas
-                  ref={canvasRef}
-                  className={`signature-canvas ${signatureError ? 'error' : ''}`}
-                  onMouseDown={startDrawing}
-                  onMouseMove={draw}
-                  onMouseUp={stopDrawing}
-                  onMouseLeave={stopDrawing}
-                  onTouchStart={(e) => {
-                    e.preventDefault()
-                    const touch = e.touches[0]
-                    const rect = e.target.getBoundingClientRect()
-                    const offsetX = touch.clientX - rect.left
-                    const offsetY = touch.clientY - rect.top
-                    setIsDrawing(true)
-                    contextRef.current.beginPath()
-                    contextRef.current.moveTo(offsetX, offsetY)
-                  }}
-                  onTouchMove={(e) => {
-                    e.preventDefault()
-                    if (!isDrawing) return
-                    const touch = e.touches[0]
-                    const rect = e.target.getBoundingClientRect()
-                    const offsetX = touch.clientX - rect.left
-                    const offsetY = touch.clientY - rect.top
-                    contextRef.current.lineTo(offsetX, offsetY)
-                    contextRef.current.stroke()
-                  }}
-                  onTouchEnd={(e) => {
-                    e.preventDefault()
-                    stopDrawing()
-                  }}
-                />
+                {/* Signature Mode Toggle */}
+                <div className="signature-mode-toggle">
+                  <button
+                    type="button"
+                    className={`mode-btn ${!showTextSignature ? 'active' : ''}`}
+                    onClick={toggleSignatureMode}
+                  >
+                    חתימה ידנית
+                  </button>
+                  <button
+                    type="button"
+                    className={`mode-btn ${showTextSignature ? 'active' : ''}`}
+                    onClick={toggleSignatureMode}
+                  >
+                    חתימת טקסט
+                  </button>
+                </div>
+
+                {!showTextSignature ? (
+                  // Canvas Signature
+                  <canvas
+                    ref={canvasRef}
+                    className={`signature-canvas ${signatureError ? 'error' : ''}`}
+                    onMouseDown={startDrawing}
+                    onMouseMove={draw}
+                    onMouseUp={stopDrawing}
+                    onMouseLeave={stopDrawing}
+                    onTouchStart={startDrawing}
+                    onTouchMove={draw}
+                    onTouchEnd={stopDrawing}
+                  />
+                ) : (
+                  // Text Signature
+                  <div className="text-signature-container">
+                    <input
+                      type="text"
+                      value={signatureText}
+                      onChange={(e) => setSignatureText(e.target.value)}
+                      className={`text-signature-input ${signatureError ? 'error' : ''}`}
+                      placeholder="הכנס את שמך המלא לחתימה"
+                      maxLength="50"
+                    />
+                    <button
+                      type="button"
+                      className="text-signature-btn"
+                      onClick={handleTextSignature}
+                      disabled={isSubmitting}
+                    >
+                      אישור חתימה
+                    </button>
+                  </div>
+                )}
+
                 {signatureError && <span className="error-message">{signatureError}</span>}
+                
                 <div className="signature-actions">
                   <button
                     type="button"
@@ -538,8 +602,12 @@ function App() {
                     נקה חתימה
                   </button>
                 </div>
+                
                 <p className="signature-instructions">
-                  חתום על הקו המקווקו למעלה כדי לאשר את הטופס
+                  {!showTextSignature 
+                    ? 'חתום על הקו המקווקו למעלה כדי לאשר את הטופס' 
+                    : 'הכנס את שמך המלא כדי לאשר את הטופס'
+                  }
                 </p>
               </div>
             </div>
@@ -576,3 +644,4 @@ function App() {
 }
 
 export default App
+
