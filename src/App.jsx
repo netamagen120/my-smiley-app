@@ -1,68 +1,449 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
+import { collection, addDoc, serverTimestamp, onSnapshot } from 'firebase/firestore'
+import { db } from './firebase'
+import { exportToExcel, exportToJSON, getStats } from './exportData'
+import { verifyPassword, getAuthStatus, setAuthStatus, logout } from './auth'
 import './App.css'
 
 function App() {
-  const [showPopup, setShowPopup] = useState(false)
+  const [formData, setFormData] = useState({
+    name: '',
+    age: '',
+    address: ''
+  })
+  const [errors, setErrors] = useState({})
+  const [isSubmitted, setIsSubmitted] = useState(false)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [lastSubmission, setLastSubmission] = useState(0)
+  const [isConnected, setIsConnected] = useState(false)
+  const [isExporting, setIsExporting] = useState(false)
+  const [stats, setStats] = useState(null)
+  const [showExportOptions, setShowExportOptions] = useState(false)
+  const [isAuthenticated, setIsAuthenticated] = useState(false)
+  const [showLoginForm, setShowLoginForm] = useState(false)
+  const [password, setPassword] = useState('')
+  const [loginError, setLoginError] = useState('')
 
-  const handleSmileyClick = () => {
-    setShowPopup(true)
-    // הסתר את הפופאפ אחרי 2 שניות
-    setTimeout(() => setShowPopup(false), 2000)
+  // Check Firebase connection
+  useEffect(() => {
+    try {
+      // Test connection by listening to a collection
+      const unsubscribe = onSnapshot(collection(db, 'form-submissions'), 
+        () => {
+          setIsConnected(true)
+        },
+        (error) => {
+          console.error('Firebase connection error:', error)
+          setIsConnected(false)
+        }
+      )
+      
+      return () => unsubscribe()
+    } catch (error) {
+      console.error('Firebase initialization error:', error)
+      setIsConnected(false)
+    }
+  }, [])
+
+  // Load statistics
+  useEffect(() => {
+    const loadStats = async () => {
+      if (isConnected) {
+        const statistics = await getStats()
+        setStats(statistics)
+      }
+    }
+    
+    loadStats()
+  }, [isConnected])
+
+  // Check authentication status
+  useEffect(() => {
+    const authStatus = getAuthStatus()
+    setIsAuthenticated(authStatus)
+  }, [])
+
+  const validateForm = () => {
+    const newErrors = {}
+
+    // Validate name
+    if (!formData.name.trim()) {
+      newErrors.name = 'שם הוא שדה חובה'
+    } else if (formData.name.trim().length < 2) {
+      newErrors.name = 'שם חייב להכיל לפחות 2 תווים'
+    } else if (!/^[א-ת\s]+$/.test(formData.name.trim())) {
+      newErrors.name = 'שם חייב להכיל רק אותיות בעברית'
+    }
+
+    // Validate age
+    if (!formData.age.trim()) {
+      newErrors.age = 'גיל הוא שדה חובה'
+    } else if (isNaN(formData.age) || parseInt(formData.age) < 1 || parseInt(formData.age) > 120) {
+      newErrors.age = 'גיל חייב להיות מספר בין 1 ל-120'
+    }
+
+    // Validate address
+    if (!formData.address.trim()) {
+      newErrors.address = 'כתובת היא שדה חובה'
+    } else if (formData.address.trim().length < 5) {
+      newErrors.address = 'כתובת חייב להכיל לפחות 5 תווים'
+    }
+
+    setErrors(newErrors)
+    return Object.keys(newErrors).length === 0
+  }
+
+  const handleInputChange = (e) => {
+    const { name, value } = e.target
+    setFormData(prev => ({
+      ...prev,
+      [name]: value
+    }))
+    
+    // Clear error when user starts typing
+    if (errors[name]) {
+      setErrors(prev => ({
+        ...prev,
+        [name]: ''
+      }))
+    }
+  }
+
+  const handleSubmit = async (e) => {
+    e.preventDefault()
+    
+    if (validateForm()) {
+      // Rate limiting - מקסימום 5 שליחות בדקה
+      const now = Date.now()
+      if (now - lastSubmission < 60000) {
+        alert('אנא המתן דקה לפני שליחה נוספת')
+        return
+      }
+      
+      setIsSubmitting(true)
+      
+      try {
+        // Add document to Firestore
+        const docRef = await addDoc(collection(db, 'form-submissions'), {
+          name: formData.name.trim(),
+          age: parseInt(formData.age),
+          address: formData.address.trim(),
+          submittedAt: serverTimestamp(),
+          ipAddress: 'client-ip', // In production, get from server
+          userAgent: navigator.userAgent
+        })
+        
+        console.log('Document written with ID: ', docRef.id)
+        setIsSubmitted(true)
+        setLastSubmission(now)
+        
+        // Reset form after successful submission
+        setTimeout(() => {
+          setFormData({ name: '', age: '', address: '' })
+          setIsSubmitted(false)
+        }, 3000)
+        
+      } catch (error) {
+        console.error('Error adding document: ', error)
+        
+        // Handle specific Firebase errors
+        if (error.code === 'permission-denied') {
+          alert('שגיאת הרשאות. אנא בדוק את הגדרות האבטחה ב-Firebase.')
+        } else if (error.code === 'unavailable') {
+          alert('שירות Firebase לא זמין כרגע. אנא נסה שוב מאוחר יותר.')
+        } else if (error.code === 'quota-exceeded') {
+          alert('חריגה ממגבלת השימוש החינמי. אנא שדרג ל-Blaze Plan.')
+        } else {
+          alert('שגיאה בשליחת הטופס: ' + error.message)
+        }
+      } finally {
+        setIsSubmitting(false)
+      }
+    }
+  }
+
+  const handleReset = () => {
+    setFormData({ name: '', age: '', address: '' })
+    setErrors({})
+    setIsSubmitted(false)
+  }
+
+  const handleExportToExcel = async () => {
+    setIsExporting(true)
+    try {
+      const result = await exportToExcel()
+      if (result.success) {
+        alert(result.message)
+      } else {
+        alert('שגיאה בייצוא: ' + result.message)
+      }
+    } catch (error) {
+      alert('שגיאה בייצוא: ' + error.message)
+    } finally {
+      setIsExporting(false)
+    }
+  }
+
+  const handleExportToJSON = async () => {
+    setIsExporting(true)
+    try {
+      const result = await exportToJSON(password)
+      if (result.success) {
+        alert(result.message)
+      } else {
+        alert('שגיאה בייצוא: ' + result.message)
+      }
+    } catch (error) {
+      alert('שגיאה בייצוא: ' + error.message)
+    } finally {
+      setIsExporting(false)
+    }
+  }
+
+  const handleLogin = () => {
+    setLoginError('')
+    if (verifyPassword(password)) {
+      setAuthStatus(true)
+      setIsAuthenticated(true)
+      setShowLoginForm(false)
+      setPassword('')
+      alert('התחברת בהצלחה!')
+    } else {
+      setLoginError('סיסמה שגויה')
+    }
+  }
+
+  const handleLogout = () => {
+    logout()
+    setIsAuthenticated(false)
+    setShowExportOptions(false)
+    alert('יצאת מהמערכת')
+  }
+
+  const handlePasswordChange = (e) => {
+    setPassword(e.target.value)
+    setLoginError('')
   }
 
   return (
     <div className="app">
-      <div className="smiley-container">
-        <svg 
-          height="200px" 
-          width="200px" 
-          version="1.1" 
-          id="Layer_1" 
-          xmlns="http://www.w3.org/2000/svg" 
-          xmlnsXlink="http://www.w3.org/1999/xlink" 
-          viewBox="0 0 512 512" 
-          xmlSpace="preserve"
-          className="smiley-image"
-          onClick={handleSmileyClick}
-        >
-          <g transform="translate(1 1)">
-            <path style={{fill:"#FFE100"}} d="M502.467,255c0,136.533-110.933,247.467-247.467,247.467S7.533,391.533,7.533,255
-              S118.467,7.533,255,7.533S502.467,118.467,502.467,255"/>
-            <path style={{fill:"#FFA800"}} d="M255,7.533c-4.267,0-8.533,0-12.8,0C372.76,14.36,476.867,122.733,476.867,255
-              S372.76,495.64,242.2,502.467c4.267,0,8.533,0,12.8,0c136.533,0,247.467-110.933,247.467-247.467S391.533,7.533,255,7.533"/>
-            <path style={{fill:"#FFFFFF"}} d="M255,7.533c4.267,0,8.533,0,12.8,0C137.24,14.36,33.133,122.733,33.133,255
-              S137.24,495.64,267.8,502.467c-4.267,0-8.533,0-12.8,0C118.467,502.467,7.533,391.533,7.533,255S118.467,7.533,255,7.533"/>
-            <path style={{fill:"#63D3FD"}} d="M186.733,144.067c0,18.773-15.36,34.133-34.133,34.133s-34.133-15.36-34.133-34.133
-              s15.36-34.133,34.133-34.133S186.733,125.293,186.733,144.067"/>
-            <path style={{fill:"#E4667F"}} d="M180.76,339.48l-22.187,22.187c-17.067,17.067-17.067,43.52,0,60.587l0,0
-              c17.067,17.067,43.52,17.067,60.587,0l58.027-58.027l-56.32,1.707L180.76,339.48z"/>
-            <path d="M255,511C114.2,511-1,395.8-1,255S114.2-1,255-1s256,115.2,256,256S395.8,511,255,511z M255,16.067
-              C123.587,16.067,16.067,123.587,16.067,255S123.587,493.933,255,493.933S493.933,386.413,493.933,255S386.413,16.067,255,16.067z"/>
-            <path d="M314.733,186.733c-0.853,0-1.707,0-2.56-0.853c-3.413-0.853-5.12-4.267-5.973-7.68c-1.707-33.28,26.453-66.56,58.88-69.12
-              c4.267,0,8.533,3.413,9.387,7.68c0.853,4.267-3.413,10.24-8.533,10.24c-17.067,0.853-33.28,15.36-40.107,32.427
-              c23.04-10.24,52.907-3.413,70.827,11.947c3.413,3.413,4.267,8.533,0.853,11.947c-3.413,3.413-8.533,4.267-11.947,0.853
-              c-17.067-15.36-48.64-18.773-64.853-0.853C319.853,185.88,317.293,186.733,314.733,186.733z"/>
-            <path d="M152.6,186.733c-23.893,0-42.667-18.773-42.667-42.667S128.707,101.4,152.6,101.4s42.667,18.773,42.667,42.667
-              S176.493,186.733,152.6,186.733z M152.6,118.467c-14.507,0-25.6,11.093-25.6,25.6s11.093,25.6,25.6,25.6s25.6-11.093,25.6-25.6
-              C178.2,129.56,167.107,118.467,152.6,118.467z"/>
-            <path d="M255,374.467c-45.227,0-86.187-23.893-110.08-64c-2.56-4.267-0.853-9.387,3.413-11.947
-              c4.267-2.56,9.387-0.853,11.947,3.413C179.907,336.92,215.747,357.4,255,357.4s75.093-20.48,94.72-55.467
-              c2.56-4.267,7.68-5.12,11.947-3.413c4.267,2.56,5.12,7.68,3.413,11.947C341.187,350.573,300.227,374.467,255,374.467z"/>
-            <path d="M188.44,442.733c-12.8,0-26.453-5.12-35.84-15.36c-19.627-19.627-19.627-52.053,0-72.533l22.187-22.187
-              c3.413-3.413,8.533-3.413,11.947,0c3.413,3.413,3.413,8.533,0,11.947l-22.187,22.187c-13.653,13.653-13.653,34.987,0,48.64
-              c13.653,13.653,34.987,13.653,48.64,0l58.027-58.027c3.413-3.413,8.533-3.413,11.947,0c3.413,3.413,3.413,8.533,0,11.947
-              l-58.027,58.027C214.893,437.613,202.093,442.733,188.44,442.733z"/>
-          </g>
-        </svg>
-      </div>
-      
-      {showPopup && (
-        <div className="popup">
-          <div className="popup-content">
-            hi!
-          </div>
+      <div className="form-container">
+        <h1 className="form-title">טופס מאובטח</h1>
+        <p className="form-subtitle">אנא מלא את הפרטים הבאים</p>
+        
+        {/* Connection status indicator */}
+        <div className={`connection-status ${isConnected ? 'connected' : 'disconnected'}`}>
+          <div className="status-dot"></div>
+          <span>{isConnected ? 'מחובר למסד נתונים' : 'לא מחובר למסד נתונים'}</span>
         </div>
-      )}
+        
+        {/* Statistics */}
+        {stats && (
+          <div className="statistics">
+            <h3>סטטיסטיקות</h3>
+            <div className="stats-grid">
+              <div className="stat-item">
+                <span className="stat-number">{stats.total}</span>
+                <span className="stat-label">סה"כ שליחות</span>
+              </div>
+              <div className="stat-item">
+                <span className="stat-number">{stats.today}</span>
+                <span className="stat-label">היום</span>
+              </div>
+              <div className="stat-item">
+                <span className="stat-number">{stats.thisWeek}</span>
+                <span className="stat-label">השבוע</span>
+              </div>
+              <div className="stat-item">
+                <span className="stat-number">{stats.thisMonth}</span>
+                <span className="stat-label">החודש</span>
+              </div>
+            </div>
+          </div>
+        )}
+        
+        {/* Export Options */}
+        {isConnected && (
+          <div className="export-section">
+            {!isAuthenticated ? (
+              <div className="auth-section">
+                <button 
+                  className="login-btn"
+                  onClick={() => setShowLoginForm(!showLoginForm)}
+                >
+                  התחבר לייצוא נתונים
+                </button>
+                
+                {showLoginForm && (
+                  <div className="login-form">
+                    <div className="form-group">
+                      <label htmlFor="password" className="form-label">
+                        סיסמת מנהל
+                      </label>
+                      <input
+                        type="password"
+                        id="password"
+                        value={password}
+                        onChange={handlePasswordChange}
+                        className={`form-input ${loginError ? 'error' : ''}`}
+                        placeholder="הכנס סיסמה"
+                        onKeyPress={(e) => e.key === 'Enter' && handleLogin()}
+                      />
+                      {loginError && <span className="error-message">{loginError}</span>}
+                    </div>
+                    <div className="auth-actions">
+                      <button 
+                        className="login-submit-btn"
+                        onClick={handleLogin}
+                      >
+                        התחבר
+                      </button>
+                      <button 
+                        className="cancel-btn"
+                        onClick={() => {
+                          setShowLoginForm(false)
+                          setPassword('')
+                          setLoginError('')
+                        }}
+                      >
+                        ביטול
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <>
+                <div className="auth-status">
+                  <span className="auth-indicator">✓ מחובר</span>
+                  <button 
+                    className="logout-btn"
+                    onClick={handleLogout}
+                  >
+                    יציאה
+                  </button>
+                </div>
+                
+                <button 
+                  className="export-toggle-btn"
+                  onClick={() => setShowExportOptions(!showExportOptions)}
+                >
+                  {showExportOptions ? 'הסתר' : 'ייצא נתונים'}
+                </button>
+                
+                {showExportOptions && (
+                  <div className="export-options">
+                    <button 
+                      className="export-btn excel-btn"
+                      onClick={handleExportToExcel}
+                      disabled={isExporting}
+                    >
+                      {isExporting ? 'מייצא...' : 'ייצא לאקסל (CSV)'}
+                    </button>
+                    <button 
+                      className="export-btn json-btn"
+                      onClick={handleExportToJSON}
+                      disabled={isExporting}
+                    >
+                      {isExporting ? 'מייצא...' : 'ייצא ל-JSON'}
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
+        
+        {isSubmitted ? (
+          <div className="success-message">
+            <div className="success-icon">✓</div>
+            <h2>הטופס נשלח בהצלחה!</h2>
+            <p>תודה על מילוי הטופס. הנתונים נשמרו באופן מאובטח.</p>
+          </div>
+        ) : (
+          <form onSubmit={handleSubmit} className="secure-form">
+            <div className="form-group">
+              <label htmlFor="name" className="form-label">
+                שם מלא *
+              </label>
+              <input
+                type="text"
+                id="name"
+                name="name"
+                value={formData.name}
+                onChange={handleInputChange}
+                className={`form-input ${errors.name ? 'error' : ''}`}
+                placeholder="הכנס את שמך המלא"
+                maxLength="50"
+                disabled={isSubmitting}
+              />
+              {errors.name && <span className="error-message">{errors.name}</span>}
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="age" className="form-label">
+                גיל *
+              </label>
+              <input
+                type="number"
+                id="age"
+                name="age"
+                value={formData.age}
+                onChange={handleInputChange}
+                className={`form-input ${errors.age ? 'error' : ''}`}
+                placeholder="הכנס את גילך"
+                min="1"
+                max="120"
+                disabled={isSubmitting}
+              />
+              {errors.age && <span className="error-message">{errors.age}</span>}
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="address" className="form-label">
+                כתובת *
+              </label>
+              <textarea
+                id="address"
+                name="address"
+                value={formData.address}
+                onChange={handleInputChange}
+                className={`form-textarea ${errors.address ? 'error' : ''}`}
+                placeholder="הכנס את כתובתך המלאה"
+                rows="3"
+                maxLength="200"
+                disabled={isSubmitting}
+              />
+              {errors.address && <span className="error-message">{errors.address}</span>}
+            </div>
+
+            <div className="form-actions">
+              <button 
+                type="submit" 
+                className="submit-btn"
+                disabled={isSubmitting}
+              >
+                {isSubmitting ? 'שולח...' : 'שלח טופס'}
+              </button>
+              <button 
+                type="button" 
+                onClick={handleReset} 
+                className="reset-btn"
+                disabled={isSubmitting}
+              >
+                נקה טופס
+              </button>
+            </div>
+            
+            {isSubmitting && (
+              <div className="submission-status">
+                <div className="loading-spinner"></div>
+                <p>שולח את הטופס...</p>
+              </div>
+            )}
+          </form>
+        )}
+      </div>
     </div>
   )
 }
