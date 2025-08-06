@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
 import { collection, addDoc, serverTimestamp, onSnapshot } from 'firebase/firestore'
 import { db } from './firebase'
-import { exportToExcel, exportToJSON, getStats } from './exportData'
+import { exportToExcel, exportToJSON } from './exportData'
 import { verifyPassword, getAuthStatus, setAuthStatus, logout } from './auth'
 import './App.css'
 
@@ -17,7 +17,6 @@ function App() {
   const [lastSubmission, setLastSubmission] = useState(0)
   const [isConnected, setIsConnected] = useState(false)
   const [isExporting, setIsExporting] = useState(false)
-  const [stats, setStats] = useState(null)
   const [showExportOptions, setShowExportOptions] = useState(false)
   const [isAuthenticated, setIsAuthenticated] = useState(false)
   const [showLoginForm, setShowLoginForm] = useState(false)
@@ -53,18 +52,6 @@ function App() {
       setIsConnected(false)
     }
   }, [])
-
-  // Load statistics
-  useEffect(() => {
-    const loadStats = async () => {
-      if (isConnected) {
-        const statistics = await getStats()
-        setStats(statistics)
-      }
-    }
-    
-    loadStats()
-  }, [isConnected])
 
   // Check authentication status
   useEffect(() => {
@@ -350,31 +337,6 @@ function App() {
           <div className="status-dot"></div>
           <span>{isConnected ? 'מחובר למסד נתונים' : 'לא מחובר למסד נתונים'}</span>
         </div>
-        
-        {/* Statistics */}
-        {stats && (
-          <div className="statistics">
-            <h3>סטטיסטיקות</h3>
-            <div className="stats-grid">
-              <div className="stat-item">
-                <span className="stat-number">{stats.total}</span>
-                <span className="stat-label">סה"כ שליחות</span>
-              </div>
-              <div className="stat-item">
-                <span className="stat-number">{stats.today}</span>
-                <span className="stat-label">היום</span>
-              </div>
-              <div className="stat-item">
-                <span className="stat-number">{stats.thisWeek}</span>
-                <span className="stat-label">השבוע</span>
-              </div>
-              <div className="stat-item">
-                <span className="stat-number">{stats.thisMonth}</span>
-                <span className="stat-label">החודש</span>
-              </div>
-            </div>
-          </div>
-        )}
         
         {/* Export Options */}
         {isConnected && (
